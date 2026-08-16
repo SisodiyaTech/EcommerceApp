@@ -4,6 +4,7 @@ import createToken from "../utils/createToken.js";
 import cookieParser from "cookie-parser";
 import generateOtp from "../utils/generateOtp.js";
 import { sendMail } from "../services/sendMail.js";
+import PasswordResetOTP from "../models/ResetOtp.models.js"
 
 export const registerUser = async (req, res) => {
   try {
@@ -136,16 +137,24 @@ export const getProfile = async (req, res) => {
 
 export const resetPassword = async (req, res) => {
   try {
-    const { name , email } = req.body;
+    const { name, email } = req.body;
     // Check if user exists
     const user = await User.findOne({ email });
 
-    if(!user){
-      return res.status(404).json({message: "User not found"})
+    if (!user) {
+      return res.status(404).json({ message: "User not found" })
     }
 
     const Otp = await generateOtp();
-    
+
+    const HashedOtp = await bcrypt.hash(Otp, 10);
+
+    await PasswordResetOTP.create({
+      user: user._id,
+      otpHash: HashedOtp,
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+    });
+
     const subject = "Your E-commerce password reset request";
     const message = `Hi ${name},
     We received a request to reset the password for your E-commerce account.
@@ -153,10 +162,58 @@ export const resetPassword = async (req, res) => {
     If you made this request, Your OTP is ${Otp}. 
     Please Verify your account and reset your password`
 
-    await sendMail(email , subject , message);
-    
-    // ----------------
+    await sendMail(email, subject, message);
+
+    res.status(200).json({ message: "OTP sent to your email" })
+
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };
+
+export const otpVerify = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    const otpDocument = await PasswordResetOTP.findOne({ email });
+
+    if (!otpDocument) {
+      return res.status(404).json({ message: "OTP not found" })
+    }
+    const isOtpValid = await bcrypt.compare(otp, otpDocument.otpHash);
+
+    if (!isOtpValid) {
+      return res.status(400).json({ message: "Invalid OTP" })
+    }
+
+    if (otpDocument.expiresAt < Date.now()) {
+      return res.status(400).json({ message: "OTP expired" })
+    }
+
+    await PasswordResetOTP.deleteOne({ _id: otpDocument._id });
+
+    res.status(200).json({ message: "OTP verified successfully" })
+
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+export const newPassword = async (req, res) => {
+  try {
+    const { email, newPassword } = req.body;
+
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" })
+    }
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await User.updateOne({ email }, { password: hashedPassword });
+    await user.save();
+    res.status(200).json({ message: "Password updated successfully" })
+
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+}
